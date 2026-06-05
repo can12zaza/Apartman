@@ -1816,12 +1816,13 @@ th {{ background: #efefef; }}
    
 
     def fill_selected_period_balance(self):
-        
         daire_id = self.o_cmb_daire.currentData()
 
         if not daire_id:
             QMessageBox.warning(self, "Uyarı", "Daire seçin.")
             return
+    
+        donem = self.in_donem.text().strip()  # ← EKLE
         if not validate_period(donem):
             QMessageBox.warning(self, "Uyarı", "Dönem formatı YYYY-MM olmalı.")
             return
@@ -2056,24 +2057,23 @@ th {{ background: #efefef; }}
         Ödeme girdilerini valide et.
         Return: (valid, daire_id, donem0, ay_sayisi, yontem, tarih_iso, acik, tutar_raw)
         """
-        
+        donem0 = self.in_donem.text().strip()  # ← EKLE
+        ay_sayisi = 1  # ← EKLE
+    
         if not validate_period(donem0):
             QMessageBox.warning(self, "Uyarı", "Dönem formatı YYYY-MM olmalı.")
             return (False, None, None, None, None, None, None, None)
-    
+
         daire_id = self.o_cmb_daire.currentData()
         if not daire_id:
             QMessageBox.warning(self, "Uyarı", "Daire seçin.")
             return (False, None, None, None, None, None, None, None)
-    
-        
-        
-    
+
         yontem = self.o_cmb_yontem.currentText()
         tarih_iso = self.o_dt_tarih.date().toPython().isoformat()
         acik = self.o_in_acik.text().strip()
         tutar_raw = self.o_in_tutar.text().strip()
-    
+
         return (True, daire_id, donem0, ay_sayisi, yontem, tarih_iso, acik, tutar_raw)
 
     def _calculate_payment_amount(self, daire_id: int, donem0: str, tek_donem: bool, 
@@ -2395,22 +2395,19 @@ th {{ background: #efefef; }}
         self.refresh_all() 
 
     def hesapla_secili_borc(self):
-
         toplam = 0.0
 
         for row in range(self.tbl_borc_list.rowCount()):
             chk = self.tbl_borc_list.cellWidget(row, 0)
 
-            if chk:
-                chk.setChecked(False)
-
+            if chk and chk.isChecked():  # ← Değişti: isChecked() ekle
                 item = self.tbl_borc_list.item(row, 4)
 
                 if item:
                     toplam += safe_float(item.text())
 
         self.o_lbl_secili_toplam.setText(
-            "Seçili Borç : 0.00 TL"
+            f"Seçili Borç : {toplam:.2f} TL"  # ← Değişti: gerçek toplam göster
         )
     def create_receipt_pdf(self, makbuz_no: str, tarih_iso: str, daire_no: str, ad: str,
                            yontem: str, kalemler: list, aciklama: str):
@@ -2594,11 +2591,12 @@ th {{ background: #efefef; }}
 
     # --- WhatsApp ---
     def open_whatsapp_for_payment_tab(self):
-       
         daire_id = self.o_cmb_daire.currentData()
         if not daire_id:
             QMessageBox.warning(self, "Uyarı", "Daire seçin.")
             return
+    
+        donem = self.in_donem.text().strip()  # ← EKLE
         self._open_whatsapp_for_daire(int(daire_id), donem)
 
     def report_whatsapp_selected(self):
@@ -2857,22 +2855,22 @@ th {{ background: #efefef; }}
         self.tbl_odeme.setRowCount(0)
 
         for r in rows:
-            row = self.tbl_odeme.rowCount()
-            self.tbl_odeme.insertRow(row)
+                row = self.tbl_odeme.rowCount()
+                self.tbl_odeme.insertRow(row)
 
-            for c, val in enumerate(r):
-                it = QTableWidgetItem(str(val))
+                for c, val in enumerate(r):
+                    it = QTableWidgetItem(str(val))
 
-            if c in (0, 3):
-                it.setTextAlignment(Qt.AlignCenter)
+                    if c in (0, 3):  # ← Girintisi döngü içine al
+                        it.setTextAlignment(Qt.AlignCenter)
 
-            if c == 4:
-                it.setText(f"{float(val):.2f}")
-                it.setTextAlignment(
-                    Qt.AlignRight | Qt.AlignVCenter
-                )
+                    if c == 4:  # ← Girintisi döngü içine al
+                        it.setText(f"{float(val):.2f}")
+                        it.setTextAlignment(
+                            Qt.AlignRight | Qt.AlignVCenter
+                        )
 
-            self.tbl_odeme.setItem(row, c, it)
+                    self.tbl_odeme.setItem(row, c, it)  # ← Girintisi döngü içine al
 
     def refresh_expenses_table(self):
         donem = self.g_in_donem.text().strip()
