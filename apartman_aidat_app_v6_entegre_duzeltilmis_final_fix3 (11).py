@@ -3045,15 +3045,21 @@ th {{ background: #efefef; }}
     
     def _balance_for_daire_period(self, daire_id: int, donem: str):
         con = connect()
+    
+        # Tahakkuk: belirli dönemin borcu
         borc = con.execute("""
             SELECT COALESCE(SUM(tutar),0) FROM tahakkuk
             WHERE donem=? AND daire_id=?
-        """, (donem, daire_id)).fetchone()[0] or 0.0
+        """, (donem, int(daire_id))).fetchone()[0] or 0.0
 
+        # Ödeme: odeme_detay tablosundan (çünkü 1 ödeme multiple dönemler kaplar)
         odeme = con.execute("""
-            SELECT COALESCE(SUM(tutar),0) FROM odemeler
-            WHERE donem=? AND daire_id=?
-        """, (donem, daire_id)).fetchone()[0] or 0.0
+            SELECT COALESCE(SUM(od.tutar),0) 
+            FROM odeme_detay od 
+            JOIN odemeler o ON o.id = od.odeme_id 
+            WHERE od.donem=? AND o.daire_id=?
+        """, (donem, int(daire_id))).fetchone()[0] or 0.0
+    
         con.close()
         borc = float(borc)
         odeme = float(odeme)
