@@ -1817,7 +1817,36 @@ th {{ background: #efefef; }}
     
 
    
-
+    def _auto_create_current_month_tahakkuk(self):
+        """Geçerli ay için tahakkuk otomatik oluştur (yoksa)"""
+        donem = ym_of_today()  # 2026-06 veya 2026-07 vs.
+        con = connect()
+    
+        try:
+            # Aktif daireleri al
+            daireler = con.execute("""
+                SELECT id, aidat FROM daireler WHERE aktif=1
+            """).fetchall()
+        
+            for daire_id, aidat in daireler:
+                # Bu dönem için tahakkuk var mı kontrol et
+                existing = con.execute(
+                    "SELECT id FROM tahakkuk WHERE donem=? AND daire_id=?",
+                    (donem, daire_id)
+                ).fetchone()
+            
+                # Yoksa oluştur
+                if not existing and aidat > 0:
+                    con.execute("""
+                        INSERT INTO tahakkuk(donem, daire_id, tutar, created_at)
+                        VALUES(?,?,?,?)
+                    """, (donem, daire_id, float(aidat), iso_today()))
+        
+            con.commit()
+        except Exception as e:
+            print(f"Otomatik tahakkuk hatası: {e}")
+        finally:
+            con.close()
     def fill_selected_period_balance(self):
         daire_id = self.o_cmb_daire.currentData()
 
@@ -2450,26 +2479,24 @@ th {{ background: #efefef; }}
             return
         r = rows[0].row()
         pid = int(self.tbl_odeme.item(r, 0).text())
+    
         if QMessageBox.question(self, "Onay", "Seçili ödemeyi silmek istiyor musunuz?") != QMessageBox.Yes:
             return
+    
         con = connect()
-        con.execute("DELETE FROM odemeler WHERE id=?", (pid,))
         try:
-            ...
+            # Önce odeme_detay kayıtlarını sil
+            con.execute("DELETE FROM odeme_detay WHERE odeme_id=?", (pid,))
+            # Sonra odemeler kaydını sil
+            con.execute("DELETE FROM odemeler WHERE id=?", (pid,))
             con.commit()
-
+            QMessageBox.information(self, "OK", "Ödeme silindi.")
+            self.refresh_all()
         except Exception as e:
             con.rollback()
-
-            QMessageBox.critical(
-                self,
-                "Hata",
-                str(e)
-            )
-
+            QMessageBox.critical(self, "Hata", f"Silme hatası:\n{e}")
         finally:
             con.close()
-        self.refresh_all()
 
     # --- gider ---
     def gider_save(self):
@@ -2669,7 +2696,9 @@ th {{ background: #efefef; }}
 
     # ---------------- refresh/report ----------------
     def refresh_all(self):
+        print("🔄 refresh_all çalışıyor...")  # ← DEBUG
         d = self.in_donem.text().strip()
+        print(f"Dönem: {d}")  # ← DEBUG
 
         if validate_period(d):
             if hasattr(self, "t_in_from") and not self.t_in_from.text().strip():
@@ -2680,25 +2709,23 @@ th {{ background: #efefef; }}
                 self.g_in_donem.setText(d)
             if hasattr(self, "r_in_donem"):
                 self.r_in_donem.setText(d)
-            
-              
+
+        # ⭐ EKLE: Otomatik tahakkuk oluştur
+        self._auto_create_current_month_tahakkuk()
 
         self.refresh_daire_table()
         self.refresh_daire_combo_all()
         self.refresh_tahakkuk_table()
         self.refresh_payments_table()
         self.refresh_expenses_table()
-        self.refresh_expenses_table()
         self.refresh_duyuru_table()
         self.refresh_report()
                
-        
-
         did = self._selected_daire_id()
         if did:
             self._ensure_current_sakin(did)
             self.refresh_sakin_history_table(did)
-            self.refresh_selected_summary(did)    
+            self.refresh_selected_summary(did) 
 
 
     def refresh_daire_table(self):
@@ -2731,6 +2758,8 @@ th {{ background: #efefef; }}
         """).fetchall()
         con.close()
 
+        print(f"🏢 Daireler bulundu: {len(rows)} adet")  # ← DEBUG
+    
         selected_t = self.t_cmb_daire.currentData() if hasattr(self, "t_cmb_daire") else None
         selected_o = self.o_cmb_daire.currentData() if hasattr(self, "o_cmb_daire") else None
         selected_e = self.e_cmb_daire.currentData() if hasattr(self, "e_cmb_daire") else None
@@ -2743,10 +2772,12 @@ th {{ background: #efefef; }}
             for did, dno, ad, aktif in rows:
                 tag = "" if int(aktif) == 1 else " (pasif)"
                 self.t_cmb_daire.addItem(f"Daire {dno} - {ad}{tag}", did)
+                print(f"  ✅ Eklendi: Daire {dno}")  # ← DEBUG
                 if selected_t is not None and int(did) == int(selected_t):
                     t_idx = self.t_cmb_daire.count() - 1
             self.t_cmb_daire.setCurrentIndex(t_idx)
             self.t_cmb_daire.blockSignals(False)
+            print(f"📌 t_cmb_daire item sayısı: {self.t_cmb_daire.count()}")  # ← DEBUG
 
         if hasattr(self, "o_cmb_daire"):
             self.o_cmb_daire.blockSignals(True)
@@ -2756,10 +2787,12 @@ th {{ background: #efefef; }}
             for did, dno, ad, aktif in rows:
                 tag = "" if int(aktif) == 1 else " (pasif)"
                 self.o_cmb_daire.addItem(f"Daire {dno} - {ad}{tag}", did)
+                print(f"  ✅ Eklendi: Daire {dno}")  # ← DEBUG
                 if selected_o is not None and int(did) == int(selected_o):
                     o_idx = self.o_cmb_daire.count() - 1
             self.o_cmb_daire.setCurrentIndex(o_idx)
             self.o_cmb_daire.blockSignals(False)
+            print(f"📌 o_cmb_daire item sayısı: {self.o_cmb_daire.count()}")  # ← DEBUG
 
         if hasattr(self, "e_cmb_daire"):
             self.e_cmb_daire.blockSignals(True)
@@ -2769,15 +2802,16 @@ th {{ background: #efefef; }}
             for did, dno, ad, aktif in rows:
                 tag = "" if int(aktif) == 1 else " (pasif)"
                 self.e_cmb_daire.addItem(f"Daire {dno} - {ad}{tag}", did)
+                print(f"  ✅ Eklendi: Daire {dno}")  # ← DEBUG
                 if selected_e is not None and int(did) == int(selected_e):
                     e_idx = self.e_cmb_daire.count() - 1
             self.e_cmb_daire.setCurrentIndex(e_idx)
             self.e_cmb_daire.blockSignals(False)
+            print(f"📌 e_cmb_daire item sayısı: {self.e_cmb_daire.count()}")  # ← DEBUG
 
-      
         # Kasa raporunu da yenile
         if hasattr(self, "btn_k_refresh"):
-            self.refresh_kasa_report()    
+            self.refresh_kasa_report()
     def refresh_tahakkuk_table(self):
         con = connect()
         rows = con.execute("""
