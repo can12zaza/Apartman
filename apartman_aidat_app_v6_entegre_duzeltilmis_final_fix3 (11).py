@@ -363,24 +363,25 @@ class EditPaymentDialog(QDialog):
         except Exception:
             QMessageBox.warning(self, "Uyarı", "Tutar sayısal olmalı.")
             return
-        
+    
         if tutar <= 0:
             QMessageBox.warning(self, "Uyarı", "Tutar 0'dan büyük olmalı.")
             return
-        
+    
         tarih = self.dt_tarih.date().toPython().isoformat()
         yontem = self.cmb_yontem.currentText()
+        makbuz = self.in_makbuz.text().strip()
         acik = self.in_acik.text().strip()
-        
+    
         con = connect()
         con.execute("""
             UPDATE odemeler
-            SET tarih=?, tutar=?, yontem=?, aciklama=?
+            SET tarih=?, tutar=?, yontem=?, makbuz_no=?, aciklama=?
             WHERE id=?
-        """, (tarih, float(tutar), yontem, acik, self.payment_id))
+        """, (tarih, float(tutar), yontem, makbuz, acik, self.payment_id))
         con.commit()
         con.close()
-        
+    
         QMessageBox.information(self, "OK", "Ödeme güncellendi.")
         self.accept()
     
@@ -401,8 +402,6 @@ class EditPaymentDialog(QDialog):
         QMessageBox.information(self, "OK", "Ödeme silindi.")
         self.accept()
 
-
-
     # ... rest of the code ...
 class EditExpenseDialog(QDialog):
     """Gider düzenleme modalı"""
@@ -421,7 +420,7 @@ class EditExpenseDialog(QDialog):
         form = QFormLayout()
         
         self.in_donem = QLineEdit()
-        self.in_donem.setReadOnly(True)
+        self.in_donem.setReadOnly(False)
         
         self.dt_tarih = QDateEdit()
         self.dt_tarih.setCalendarPopup(True)
@@ -484,33 +483,39 @@ class EditExpenseDialog(QDialog):
         self.in_tutar.setText(f"{float(tutar):.2f}")
         self.cmb_yontem.setCurrentText(yontem)
         self.in_acik.setText(acik or "")   
+
     
     def save_expense(self):
         """Gideri güncelle"""
+        donem = self.in_donem.text().strip()
+        if not validate_period(donem):
+            QMessageBox.warning(self, "Uyarı", "Dönem formatı YYYY-MM olmalı.")
+            return
+    
         try:
             tutar = safe_float(self.in_tutar.text())
         except Exception:
             QMessageBox.warning(self, "Uyarı", "Tutar sayısal olmalı.")
             return
-        
+    
         if tutar <= 0:
             QMessageBox.warning(self, "Uyarı", "Tutar 0'dan büyük olmalı.")
             return
-        
+    
         tarih = self.dt_tarih.date().toPython().isoformat()
         kat = self.cmb_kat.currentText()
         yontem = self.cmb_yontem.currentText()
         acik = self.in_acik.text().strip()
-        
+    
         con = connect()
         con.execute("""
             UPDATE giderler
-            SET tarih=?, kategori=?, tutar=?, yontem=?, aciklama=?
+            SET donem=?, tarih=?, kategori=?, tutar=?, yontem=?, aciklama=?
             WHERE id=?
-        """, (tarih, kat, float(tutar), yontem, acik, self.expense_id))
+        """, (donem, tarih, kat, float(tutar), yontem, acik, self.expense_id))
         con.commit()
         con.close()
-        
+    
         QMessageBox.information(self, "OK", "Gider güncellendi.")
         self.accept()
     
@@ -1124,9 +1129,7 @@ class ApartmanAidatApp(QWidget):
             self.tbl_borc_list.insertRow(row)
 
             chk = QCheckBox()
-            chk.stateChanged.connect(
-            self.hesapla_secili_borc
-            )
+            chk.stateChanged.connect(self.hesapla_secili_borc)
             self.tbl_borc_list.setCellWidget(row, 0, chk)
 
             vals = [
@@ -2250,56 +2253,49 @@ th {{ background: #efefef; }}
 
     def _get_all_debt_periods(self, daire_id: int) -> list:
         """
-        Dairenin tüm borçlu dönemlerini al.
-        Return: [(donem, kalan_tutar), ...] (sadece kalan > 0)
+        Dairenin tüm borçlu dönemlerini al (tutarı > 0 olanlar).
+        Return: [(donem, kalan_tutar), ...]
         """
         con = connect()
         rows = con.execute("""
-            SELECT d.donem,
-                   COALESCE(b.borc, 0) - COALESCE(o.odeme, 0) as kalan
+            SELECT donem,
+                   COALESCE(SUM(CASE WHEN t.id IS NOT NULL THEN t.tutar ELSE 0 END), 0) - 
+                   COALESCE(SUM(CASE WHEN od.id IS NOT NULL THEN od.tutar ELSE 0 END), 0) as kalan
             FROM (
-                SELECT donem FROM tahakkuk
+                SELECT DISTINCT donem FROM tahakkuk WHERE daire_id=?
                 UNION
-                SELECT donem FROM odemeler
+                SELECT DISTINCT donem FROM odeme_detay WHERE odeme_id IN (
+                    SELECT id FROM odemeler WHERE daire_id=?
+                )
             ) d
-            LEFT JOIN (
-            SELECT donem, SUM(tutar) as borc
-            FROM tahakkuk WHERE daire_id=?
-            GROUP BY donem
-        ) b ON d.donem = b.donem
-        LEFT JOIN (
-                SELECT donem, SUM(tutar) as odeme
-                FROM odemeler WHERE daire_id=?
-                GROUP BY donem
-            ) o ON d.donem = o.donem
-            WHERE (COALESCE(b.borc, 0) - COALESCE(o.odeme, 0)) > 0.00001
-            ORDER BY d.donem
-        """, (int(daire_id), int(daire_id))).fetchall()
+            LEFT JOIN tahakkuk t ON t.donem = d.donem AND t.daire_id=?
+            LEFT JOIN odeme_detay od ON od.donem = d.donem AND od.odeme_id IN (
+                SELECT id FROM odemeler WHERE daire_id=?
+            )
+            GROUP BY d.donem
+            HAVING kalan > 0.00001
+            ORDER BY d.donem DESC
+        """, (int(daire_id), int(daire_id), int(daire_id), int(daire_id))).fetchall()
         con.close()
         return rows    
 
         # --- payments ---
-   
     def odeme_save_multi(self):
-
+        """Ödeme kayıt - tek dönem ve peşin modlar"""
         daire_id = self.o_cmb_daire.currentData()
-
         if not daire_id:
             QMessageBox.warning(self, "Uyarı", "Daire seçin.")
             return
 
         secilenler = []
-        toplam_borc = 0
+        toplam_borc = 0.0
 
+        # Seçili dönemleri al
         for row in range(self.tbl_borc_list.rowCount()):
-
             chk = self.tbl_borc_list.cellWidget(row, 0)
-
             if chk and chk.isChecked():
-
                 donem = self.tbl_borc_list.item(row, 1).text()
                 kalan = safe_float(self.tbl_borc_list.item(row, 4).text())
-
                 secilenler.append((donem, kalan))
                 toplam_borc += kalan
 
@@ -2308,18 +2304,18 @@ th {{ background: #efefef; }}
             return
 
         tutar_text = self.o_in_tutar.text().strip()
-
+    
         if tutar_text:
             toplam_odeme = safe_float(tutar_text)
         else:
             toplam_odeme = toplam_borc
 
         if toplam_odeme <= 0:
-            QMessageBox.warning(
-                self,
-                "Uyarı",
-                "Ödeme tutarı 0'dan büyük olmalıdır."
-            )
+            QMessageBox.warning(self, "Uyarı", "Ödeme tutarı 0'dan büyük olmalıdır.")
+            return
+
+        if toplam_odeme > toplam_borc + 0.01:
+            QMessageBox.warning(self, "Uyarı", f"Fazla ödeme kabul edilmiyor. Seçili borç: {toplam_borc:.2f} TL")
             return
 
         tarih = self.o_dt_tarih.date().toPython().isoformat()
@@ -2332,82 +2328,59 @@ th {{ background: #efefef; }}
         con = connect()
         cur = con.cursor()
 
-        cur.execute("""
-            INSERT INTO odemeler(
-                donem,
-                tarih,
-                daire_id,
-                tutar,
-                yontem,
-                makbuz_no,
-                aciklama
-            )
-            VALUES(?,?,?,?,?,?,?)
-        """, (
-            ilk_donem,
-            tarih,
-            daire_id,
-            toplam_odeme,
-            yontem,
-            makbuz_no,
-            acik
-        ))
-
-        odeme_id = cur.lastrowid
-
-        kalan_odeme = toplam_odeme
-
-        for donem, kalan_borc in secilenler:
-
-            if kalan_odeme <= 0:
-                break
-
-            odeme_tutari = min(kalan_odeme, kalan_borc)
-
+        try:
+            # Ödeme kaydı oluştur
             cur.execute("""
-                INSERT INTO odeme_detay(
-                    odeme_id,
-                    donem,
-                    tutar
-                )
-                VALUES(?,?,?)
-            """, (
-                odeme_id,
-                donem,
-                odeme_tutari
-            ))
+                INSERT INTO odemeler(donem, tarih, daire_id, tutar, yontem, makbuz_no, aciklama)
+                VALUES(?,?,?,?,?,?,?)
+            """, (ilk_donem, tarih, daire_id, toplam_odeme, yontem, makbuz_no, acik))
 
-            kalan_odeme -= odeme_tutari
+            odeme_id = cur.lastrowid
+            kalan_odeme = toplam_odeme
 
-        con.commit()
-        con.close()
+            # Ödemeyi seçili dönemlere dağıt
+            for donem, kalan_borc in secilenler:
+                if kalan_odeme <= 0:
+                    break
 
-        QMessageBox.information(
-            self,
-            "OK",
-            f"{len(secilenler)} dönem için ödeme kaydedildi."
-        )
+                odeme_tutari = min(kalan_odeme, kalan_borc)
 
-        self.o_in_tutar.clear()
-        self.o_in_acik.clear()
+                cur.execute("""
+                    INSERT INTO odeme_detay(odeme_id, donem, tutar)
+                    VALUES(?,?,?)
+                """, (odeme_id, donem, odeme_tutari))
 
-        self.load_borc_listesi()
-        self.refresh_all() 
+                kalan_odeme -= odeme_tutari
+
+            con.commit()
+            QMessageBox.information(self, "OK", f"{len(secilenler)} dönem için ödeme kaydedildi.\nMakbuz No: {makbuz_no}")
+        
+            self.o_in_tutar.clear()
+            self.o_in_acik.clear()
+            self.load_borc_listesi()
+            self.refresh_all()
+
+        except Exception as e:
+            con.rollback()
+            QMessageBox.critical(self, "Hata", f"Ödeme kaydedilemedi:\n{e}")
+        finally:
+            con.close()
+   
 
     def hesapla_secili_borc(self):
+        """Seçili borçları topla ve etiket güncelle"""
         toplam = 0.0
 
         for row in range(self.tbl_borc_list.rowCount()):
             chk = self.tbl_borc_list.cellWidget(row, 0)
 
-            if chk and chk.isChecked():  # ← Değişti: isChecked() ekle
+            if chk and isinstance(chk, QCheckBox) and chk.isChecked():
                 item = self.tbl_borc_list.item(row, 4)
-
                 if item:
                     toplam += safe_float(item.text())
 
         self.o_lbl_secili_toplam.setText(
-            f"Seçili Borç : {toplam:.2f} TL"  # ← Değişti: gerçek toplam göster
+            f"Seçili Borç : {toplam:.2f} TL"
         )
     def create_receipt_pdf(self, makbuz_no: str, tarih_iso: str, daire_no: str, ad: str,
                            yontem: str, kalemler: list, aciklama: str):
@@ -2715,7 +2688,7 @@ th {{ background: #efefef; }}
         self.refresh_tahakkuk_table()
         self.refresh_payments_table()
         self.refresh_expenses_table()
-        self.load_expense_history()  # ⭐ YENİ: Geçmiş giderleri yükle
+        self.refresh_expenses_table()
         self.refresh_duyuru_table()
         self.refresh_report()
                
