@@ -63,12 +63,19 @@ def ym_of_today() -> str:
 
 def safe_float(s: str) -> float:
     t = (s or "").strip()
+
     if not t:
         return 0.0
+
     t = t.replace(" ", "")
-    # TR: 1.234,56 -> 1234.56
-    t = t.replace(".", "")
-    t = t.replace(",", ".")
+
+    # Hem TR hem EN formatını destekle
+    if "," in t and "." in t:
+        t = t.replace(".", "")
+        t = t.replace(",", ".")
+    elif "," in t:
+        t = t.replace(",", ".")
+
     return float(t)
 
 
@@ -745,6 +752,9 @@ class ApartmanAidatApp(QWidget):
         form = QFormLayout(top)
 
         self.t_cmb_daire = QComboBox()
+        self.t_cmb_daire.currentIndexChanged.connect(
+        self.refresh_tahakkuk_table
+    )
         self.t_in_from = QLineEdit(ym_of_today())
         self.t_in_to = QLineEdit(ym_of_today())
         self.t_in_tutar = QLineEdit()
@@ -781,23 +791,67 @@ class ApartmanAidatApp(QWidget):
         
     def delete_selected_tahakkuk(self):
         row = self.tbl_tah.currentRow()
+
         if row < 0:
             QMessageBox.warning(self, "Uyarı", "Silmek için bir tahakkuk seçin.")
             return
 
-        try:
-            tah_id = int(self.tbl_tah.item(row, 0).text())
-        except Exception:
-            QMessageBox.warning(self, "Uyarı", "Geçerli bir tahakkuk satırı seçin.")
-            return
-
-        if QMessageBox.question(self, "Onay", "Seçili borç kaydı silinsin mi?") != QMessageBox.Yes:
-            return
+        tah_id = int(self.tbl_tah.item(row, 0).text())
 
         con = connect()
-        con.execute("DELETE FROM tahakkuk WHERE id=?", (tah_id,))
+
+        tah = con.execute("""
+            SELECT daire_id, donem
+            FROM tahakkuk
+            WHERE id=?
+        """, (tah_id,)).fetchone()
+
+        if not tah:
+            con.close()
+            return
+
+        daire_id, donem = tah
+    
+        odeme_var = con.execute("""
+            SELECT COUNT(*)
+            FROM odeme_detay od
+            JOIN odemeler o ON o.id = od.odeme_id
+            WHERE o.daire_id=? AND od.donem=?
+        """, (daire_id, donem)).fetchone()[0]
+
+        if odeme_var > 0:
+            con.close()
+
+            QMessageBox.warning(
+                self,
+                "Silme Engellendi",
+                f"{donem} dönemine ait ödeme bulunduğu için tahakkuk silinemez."
+            )
+            return
+
+        cevap = QMessageBox.question(
+            self,
+            "Onay",
+            f"{donem} dönemine ait tahakkuk silinsin mi?"
+        )
+
+        if cevap != QMessageBox.Yes:
+            con.close()
+            return
+
+        con.execute(
+            "DELETE FROM tahakkuk WHERE id=?",
+            (tah_id,)
+        )
+
         con.commit()
         con.close()
+
+        QMessageBox.information(
+            self,
+            "Başarılı",
+            "Tahakkuk silindi."
+        )
 
         self.refresh_all()
 
@@ -1594,10 +1648,14 @@ class ApartmanAidatApp(QWidget):
                 "SELECT COALESCE(SUM(tutar),0) FROM tahakkuk WHERE daire_id=? AND donem=?",
                 (int(daire_id), p)
             ).fetchone()[0] or 0.0
-            o = con.execute(
-                "SELECT COALESCE(SUM(tutar),0) FROM odemeler WHERE daire_id=? AND donem=?",
-                (int(daire_id), p)
-            ).fetchone()[0] or 0.0
+            o = con.execute("""
+                SELECT COALESCE(SUM(od.tutar),0)
+                FROM odeme_detay od
+                JOIN odemeler o
+                    ON o.id = od.odeme_id
+                WHERE o.daire_id=?
+                  AND od.donem=?
+            """, (int(daire_id), p)).fetchone()[0] or 0
             bakiye = float(b) - float(o)
             dur = status_for_balance(p, bakiye)
 
@@ -1755,8 +1813,14 @@ th {{ background: #efefef; }}
         self.lbl_total_bakiye.setText(f"{float(total_bakiye):.2f}")
         p_borc = con.execute("SELECT COALESCE(SUM(tutar),0) FROM tahakkuk WHERE daire_id=? AND donem=?",
                              (int(daire_id), donem)).fetchone()[0] or 0.0
-        p_odeme = con.execute("SELECT COALESCE(SUM(tutar),0) FROM odemeler WHERE daire_id=? AND donem=?",
-                              (int(daire_id), donem)).fetchone()[0] or 0.0
+        p_odeme = con.execute("""
+            SELECT COALESCE(SUM(od.tutar),0)
+            FROM odeme_detay od
+            JOIN odemeler o
+                ON o.id = od.odeme_id
+            WHERE o.daire_id=?
+              AND od.donem=?
+        """, (int(daire_id), donem)).fetchone()[0] or 0.0
         p_bakiye = float(p_borc) - float(p_odeme)
 
         self.lbl_period_borc.setText(f"{float(p_borc):.2f}")
@@ -2696,9 +2760,9 @@ th {{ background: #efefef; }}
 
     # ---------------- refresh/report ----------------
     def refresh_all(self):
-        print("🔄 refresh_all çalışıyor...")  # ← DEBUG
+        
         d = self.in_donem.text().strip()
-        print(f"Dönem: {d}")  # ← DEBUG
+       
 
         if validate_period(d):
             if hasattr(self, "t_in_from") and not self.t_in_from.text().strip():
@@ -2758,7 +2822,7 @@ th {{ background: #efefef; }}
         """).fetchall()
         con.close()
 
-        print(f"🏢 Daireler bulundu: {len(rows)} adet")  # ← DEBUG
+     
     
         selected_t = self.t_cmb_daire.currentData() if hasattr(self, "t_cmb_daire") else None
         selected_o = self.o_cmb_daire.currentData() if hasattr(self, "o_cmb_daire") else None
@@ -2767,17 +2831,26 @@ th {{ background: #efefef; }}
         if hasattr(self, "t_cmb_daire"):
             self.t_cmb_daire.blockSignals(True)
             self.t_cmb_daire.clear()
-            self.t_cmb_daire.addItem("-- seç --", None)
+
+            # Tüm kayıtları göster
+            self.t_cmb_daire.addItem("Tüm Daireler", -1)
+
             t_idx = 0
+
             for did, dno, ad, aktif in rows:
                 tag = "" if int(aktif) == 1 else " (pasif)"
-                self.t_cmb_daire.addItem(f"Daire {dno} - {ad}{tag}", did)
-                print(f"  ✅ Eklendi: Daire {dno}")  # ← DEBUG
+
+                self.t_cmb_daire.addItem(
+                    f"Daire {dno} - {ad}{tag}",
+                    did
+                )
+
                 if selected_t is not None and int(did) == int(selected_t):
                     t_idx = self.t_cmb_daire.count() - 1
+
             self.t_cmb_daire.setCurrentIndex(t_idx)
             self.t_cmb_daire.blockSignals(False)
-            print(f"📌 t_cmb_daire item sayısı: {self.t_cmb_daire.count()}")  # ← DEBUG
+            
 
         if hasattr(self, "o_cmb_daire"):
             self.o_cmb_daire.blockSignals(True)
@@ -2787,12 +2860,12 @@ th {{ background: #efefef; }}
             for did, dno, ad, aktif in rows:
                 tag = "" if int(aktif) == 1 else " (pasif)"
                 self.o_cmb_daire.addItem(f"Daire {dno} - {ad}{tag}", did)
-                print(f"  ✅ Eklendi: Daire {dno}")  # ← DEBUG
+               
                 if selected_o is not None and int(did) == int(selected_o):
                     o_idx = self.o_cmb_daire.count() - 1
             self.o_cmb_daire.setCurrentIndex(o_idx)
             self.o_cmb_daire.blockSignals(False)
-            print(f"📌 o_cmb_daire item sayısı: {self.o_cmb_daire.count()}")  # ← DEBUG
+            
 
         if hasattr(self, "e_cmb_daire"):
             self.e_cmb_daire.blockSignals(True)
@@ -2802,42 +2875,68 @@ th {{ background: #efefef; }}
             for did, dno, ad, aktif in rows:
                 tag = "" if int(aktif) == 1 else " (pasif)"
                 self.e_cmb_daire.addItem(f"Daire {dno} - {ad}{tag}", did)
-                print(f"  ✅ Eklendi: Daire {dno}")  # ← DEBUG
+               
                 if selected_e is not None and int(did) == int(selected_e):
                     e_idx = self.e_cmb_daire.count() - 1
             self.e_cmb_daire.setCurrentIndex(e_idx)
             self.e_cmb_daire.blockSignals(False)
-            print(f"📌 e_cmb_daire item sayısı: {self.e_cmb_daire.count()}")  # ← DEBUG
+           
 
         # Kasa raporunu da yenile
         if hasattr(self, "btn_k_refresh"):
             self.refresh_kasa_report()
     def refresh_tahakkuk_table(self):
-        con = connect()
-        rows = con.execute("""
-            SELECT t.id,
-                   d.daire_no || ' - ' || d.ad_soyad AS daire,
-                   t.donem,
-                   t.tutar,
-                   t.created_at
-            FROM tahakkuk t
-            JOIN daireler d ON d.id = t.daire_id
-            ORDER BY t.donem DESC, CAST(d.daire_no AS INT), d.daire_no
-        """).fetchall()
-        con.close()
 
         self.tbl_tah.setRowCount(0)
-        for rec in rows:
+
+        daire_id = self.t_cmb_daire.currentData()
+        if daire_id == -1:
+            daire_id = None
+
+        con = connect()
+
+        if daire_id:
+
+            rows = con.execute("""
+                SELECT
+                    t.id,
+                    d.daire_no || ' - ' || d.ad_soyad,
+                    t.donem,
+                    t.tutar,
+                    t.created_at
+                FROM tahakkuk t
+                JOIN daireler d ON d.id=t.daire_id
+                WHERE t.daire_id=?
+                ORDER BY t.donem DESC
+            """, (daire_id,)).fetchall()
+
+        else:
+
+            rows = con.execute("""
+                SELECT
+                    t.id,
+                    d.daire_no || ' - ' || d.ad_soyad,
+                    t.donem,
+                    t.tutar,
+                    t.created_at
+                FROM tahakkuk t
+                JOIN daireler d ON d.id=t.daire_id
+                ORDER BY t.donem DESC
+            """).fetchall()
+
+        con.close()
+
+        for kayit in rows:
+
             row = self.tbl_tah.rowCount()
             self.tbl_tah.insertRow(row)
-            for c, val in enumerate(rec):
-                it = QTableWidgetItem(str(val))
-                if c == 0:
-                    it.setTextAlignment(Qt.AlignCenter)
-                if c == 3:
-                    it.setText(f"{float(val):.2f}")
-                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.tbl_tah.setItem(row, c, it)
+
+            for col, val in enumerate(kayit):
+                self.tbl_tah.setItem(
+                    row,
+                    col,
+                    QTableWidgetItem(str(val))
+                )
 
 
     def refresh_payments_table(self):
