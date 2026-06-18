@@ -2345,30 +2345,50 @@ th {{ background: #efefef; }}
             return False
 
     def _get_all_debt_periods(self, daire_id: int) -> list:
-        """
-        Dairenin tüm borçlu dönemlerini al (tutarı > 0 olanlar).
-        Return: [(donem, kalan_tutar), ...]
-        """
         con = connect()
+
         rows = con.execute("""
-            SELECT donem,
-                   COALESCE(SUM(CASE WHEN t.id IS NOT NULL THEN t.tutar ELSE 0 END), 0) - 
+            SELECT d.donem,
+                   COALESCE(SUM(CASE WHEN t.id IS NOT NULL THEN t.tutar ELSE 0 END), 0) -
                    COALESCE(SUM(CASE WHEN od.id IS NOT NULL THEN od.tutar ELSE 0 END), 0) as kalan
             FROM (
-                SELECT DISTINCT donem FROM tahakkuk WHERE daire_id=?
+                SELECT DISTINCT donem
+                FROM tahakkuk
+                WHERE daire_id=?
+
                 UNION
-                SELECT DISTINCT donem FROM odeme_detay WHERE odeme_id IN (
-                    SELECT id FROM odemeler WHERE daire_id=?
+
+                SELECT DISTINCT donem
+                FROM odeme_detay
+                WHERE odeme_id IN (
+                    SELECT id
+                    FROM odemeler
+                    WHERE daire_id=?
                 )
             ) d
-            LEFT JOIN tahakkuk t ON t.donem = d.donem AND t.daire_id=?
-            LEFT JOIN odeme_detay od ON od.donem = d.donem AND od.odeme_id IN (
-                SELECT id FROM odemeler WHERE daire_id=?
-            )
+
+            LEFT JOIN tahakkuk t
+                ON t.donem=d.donem
+               AND t.daire_id=?
+
+            LEFT JOIN odeme_detay od
+                ON od.donem=d.donem
+               AND od.odeme_id IN (
+                    SELECT id
+                    FROM odemeler
+                    WHERE daire_id=?
+               )
+
             GROUP BY d.donem
             HAVING kalan > 0.00001
             ORDER BY d.donem DESC
-        """, (int(daire_id), int(daire_id), int(daire_id), int(daire_id))).fetchall()
+        """, (
+            int(daire_id),
+            int(daire_id),
+            int(daire_id),
+            int(daire_id)
+        )).fetchall()
+
         con.close()
         return rows    
 
